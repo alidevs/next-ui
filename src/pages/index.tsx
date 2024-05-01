@@ -1,7 +1,6 @@
 import '@/styles/globals.css';
 import { useEffect, useState } from 'react';
 
-// Custom hook for fetching data from Solr
 function useSolr(params) {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -10,7 +9,7 @@ function useSolr(params) {
   useEffect(() => {
     if (!params.q) {
       setData(null);
-      return; // Do nothing if the query is empty
+      return;
     }
 
     const queryParams = new URLSearchParams();
@@ -62,14 +61,16 @@ function DocumentItem({ doc }) {
       <p className="mt-2 text-gray-700">{contentSnippet}</p>
       <p className="mt-1 text-sm">
         <span className="m-2 rounded bg-blue-100 p-1.5 text-xs font-semibold text-blue-800">
-          {doc.boost?.[0] ?? 'No Boost'}
+          B: {doc.boost?.[0] ?? 'No Boost'}
+        </span>
+        <span className="m-2 rounded bg-blue-100 p-1.5 text-xs font-semibold text-blue-800">
+          R: {doc.rank?.[0] ?? 'No Rank'}
         </span>
       </p>
     </div>
   );
 }
 
-// Main component
 export default function HomePage() {
   const [query, setQuery] = useState('');
   const [submitQuery, setSubmitQuery] = useState('');
@@ -79,12 +80,13 @@ export default function HomePage() {
   const solrParams = {
     q: submitQuery,
     defType: 'dismax',
-    qf: 'title^3 description^2 content',
+    qf: 'title^4 content',
     indent: 'on',
     qop: 'AND',
     start: start,
     rows: rowsPerPage,
     useParams: 'title,host,content',
+    sort: 'boost desc',
   };
 
   const { data, error, isLoading } = useSolr(solrParams);
@@ -93,7 +95,7 @@ export default function HomePage() {
   const handleSearchSubmit = (event) => {
     event.preventDefault();
     setSubmitQuery(query);
-    setStart(0); // Reset to the first page on new search
+    setStart(0);
   };
 
   const handleNextPage = () => {

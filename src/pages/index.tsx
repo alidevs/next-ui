@@ -1,5 +1,5 @@
 import '@/styles/globals.css';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 function useSolr(params) {
   const [data, setData] = useState(null);
@@ -15,7 +15,7 @@ function useSolr(params) {
     const fetchData = async () => {
       setIsLoading(true);
       const queryParams = new URLSearchParams(params).toString();
-      const url = `http://localhost:8983/solr/nutch/select?${queryParams}`;
+      const url = `/api/solr?${queryParams}`;
 
       try {
         const response = await fetch(url);
@@ -23,6 +23,7 @@ function useSolr(params) {
           throw new Error(`HTTP error! Status: ${response.status}`);
         }
         const jsonData = await response.json();
+        console.log('Solr response:', jsonData); // Log the Solr response for debugging
         setData(jsonData);
       } catch (error) {
         setError(new Error(error.message));
@@ -37,10 +38,51 @@ function useSolr(params) {
   return { data, error, isLoading };
 }
 
-function DocumentItem({ doc }) {
-  const contentSnippet = doc.content?.[0]
-    ? doc.content[0].substring(0, 500)
-    : 'No Content';
+function highlightText(text, searchTerm, highlightedParts, maxLength) {
+  if (!searchTerm || searchTerm.trim() === '' || !highlightedParts) {
+    return text;
+  }
+
+  // Check if there is highlighting data available
+  if (Array.isArray(text)) {
+    const highlightedText = text.find((part) => part.includes('<em>'));
+    if (highlightedText) {
+      return highlightedText.length > maxLength
+        ? `${highlightedText.substring(0, maxLength)}...`
+        : highlightedText;
+    }
+  }
+
+  // If no highlighting data, fallback to the original content
+  const regex = new RegExp(`(${searchTerm})`, 'gi');
+  const highlightedContent = text.split(regex).map((part, index) =>
+    highlightedParts.includes(part.toLowerCase()) ? (
+      <span key={index} className="highlight">
+        {part}
+      </span>
+    ) : (
+      part
+    ),
+  );
+
+  const concatenatedContent = highlightedContent.join('');
+  return concatenatedContent.length > maxLength
+    ? `${concatenatedContent.substring(0, maxLength)}...`
+    : concatenatedContent;
+}
+
+function DocumentItem({ doc, searchTerm }) {
+  const title = doc.title?.[0] ?? 'No Title';
+  const content = doc.content?.[0] ?? 'No Content';
+  const highlightedTitle = doc.highlighting?.[doc.id]?.title || title; // Use highlighting for title if available // Otherwise, use the default title
+  const highlightedContent = doc.highlighting?.[doc.id]?.content || content; // Use highlighting for content if available // Otherwise, use the default content
+
+  const truncatedContent = highlightText(
+    highlightedContent,
+    searchTerm,
+    [searchTerm],
+    300,
+  );
 
   return (
     <div
@@ -48,46 +90,17 @@ function DocumentItem({ doc }) {
       onClick={() => window.open(doc.url?.[0], '_blank')}
     >
       <h3 className="text-lg font-semibold">
-        {doc.title?.[0] ? doc.title[0] : 'No Title'}
+        {highlightText(highlightedTitle, searchTerm, [searchTerm])}
       </h3>
-      <p className="mt-2 text-gray-700">{contentSnippet}</p>
-      <p className="mt-1 text-sm">
-        <span className="m-2 rounded bg-blue-100 p-1.5 text-xs font-semibold text-blue-800">
-          B: {doc.boost?.[0] ?? 'No Boost'}
-        </span>
-        <span className="m-2 rounded bg-blue-100 p-1.5 text-xs font-semibold text-blue-800">
-          R: {doc.rank ?? 'No Rank'}
-        </span>
-      </p>
-    </div>
-  );
-}
-
-function FieldBoostCheckbox({
-  field,
-  onBoostChange,
-  onCheckChange,
-  isChecked,
-  boostValue,
-}) {
-  return (
-    <div className="flex items-center">
-      <input
-        type="checkbox"
-        checked={isChecked}
-        onChange={(e) => onCheckChange(field, e.target.checked)}
-        className="mr-2"
-      />
-      {field}
-      {isChecked && (
-        <input
-          type="number"
-          placeholder="Boost"
-          value={boostValue}
-          onChange={(e) => onBoostChange(field, e.target.value)}
-          className="ml-2 w-20 rounded border p-1"
-        />
-      )}
+      <a
+        href={doc.url?.[0]}
+        target="_blank"
+        rel="noreferrer"
+        className="text-blue-500"
+      >
+        {doc.url?.[0] ?? 'No URL'}
+      </a>
+      <p className="mt-2 text-gray-700">{truncatedContent}</p>
     </div>
   );
 }
@@ -96,12 +109,25 @@ export default function HomePage() {
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [start, setStart] = useState(0);
-  const [fieldBoosts, setFieldBoosts] = useState({
-    title: { boost: 10, checked: true },
-    url: { boost: 2, checked: true },
-    content: { boost: 1, checked: true },
-  });
-  const rowsPerPage = 10;
+  const rowsPerPage = 20;
+
+  const solrParams = {
+    q: debouncedQuery,
+    defType: 'dismax',
+    indent: 'on',
+    qop: 'AND',
+    qf: 'title content url',
+    rows: rowsPerPage,
+    sort: 'boost desc',
+    start: start,
+    rq: '{!rerank reRankQuery=$rqq reRankDocs=1000 reRankWeight=30}',
+    rqq: 'url:*\\.sa',
+    hl: 'on',
+    'hl.fl': 'content',
+    'hl.snippets': 3,
+  };
+
+  const { data, error, isLoading } = useSolr(solrParams);
 
   useEffect(() => {
     const handler = setTimeout(() => {
@@ -113,40 +139,8 @@ export default function HomePage() {
     };
   }, [query]);
 
-  const handleFieldBoostChange = (field, boost) => {
-    setFieldBoosts((prev) => ({
-      ...prev,
-      [field]: { ...prev[field], boost },
-    }));
-  };
-
-  const handleFieldCheckChange = (field, checked) => {
-    setFieldBoosts((prev) => ({
-      ...prev,
-      [field]: { ...prev[field], checked },
-    }));
-  };
-
-  const solrParams = {
-    q: debouncedQuery,
-    defType: 'dismax',
-    qf: Object.entries(fieldBoosts)
-      .filter(([_, data]) => data.checked)
-      .map(([field, data]) => `${field}^${data.boost}`)
-      .join(' '),
-    indent: 'on',
-    qop: 'AND',
-    rows: rowsPerPage,
-    useParams: Object.keys(fieldBoosts)
-      .filter((field) => fieldBoosts[field].checked)
-      .join(','),
-    sort: 'boost desc',
-    start: start,
-  };
-
-  const { data, error, isLoading } = useSolr(solrParams);
-
   const handleSearchChange = (event) => setQuery(event.target.value);
+
   const handleSearchSubmit = (event) => {
     event.preventDefault();
     setDebouncedQuery(query);
@@ -189,23 +183,15 @@ export default function HomePage() {
           Search
         </button>
       </form>
-      <div className="mb-4 flex flex-wrap gap-4">
-        {Object.keys(fieldBoosts).map((field) => (
-          <FieldBoostCheckbox
-            key={field}
-            field={field}
-            onBoostChange={handleFieldBoostChange}
-            onCheckChange={handleFieldCheckChange}
-            isChecked={fieldBoosts[field].checked}
-            boostValue={fieldBoosts[field].boost}
-          />
-        ))}
-      </div>
 
       {data && data.response && data.response.docs.length > 0 ? (
         <>
           {data.response.docs.map((doc) => (
-            <DocumentItem key={doc.id} doc={doc} />
+            <DocumentItem
+              key={doc.id}
+              doc={doc}
+              searchTerm={debouncedQuery}
+            />
           ))}
           <div className="mt-4 flex">
             <button
